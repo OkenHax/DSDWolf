@@ -1,0 +1,690 @@
+key owner;
+integer CHANNEL;
+integer HUDOpen=TRUE;
+
+list currentShownButtons; //List of buttons currently Shown [(str)Name; (int)link_number]
+
+
+list variables;//[(str)name, (str)value)]
+list switches; //[(str)name, (str)value)]
+
+list btPushed;//[(int)Link_number, (int)face, (key)texture_disabled]
+
+integer scriptSilent;
+string lastLoadVariable;
+vector lastTouchCoord;
+//========== Notecard
+string NOTECARD="settings";//Change if you want to change the name of the settings notecard
+key kQuery;
+integer current_notecard;
+integer iLine;
+//==================
+string SEPARATOR_1="^";
+string SEPARATOR_2="~";
+string SEPARATOR_3="/";
+string SEPARATOR_LIST=",";
+//===================
+
+list maskButtons; //[link_num:button_num ; command]
+list maskButtonsSelected; //[maskButton_Index]
+
+
+//===================
+string textureOn;
+string textureOff;
+key texPicker1="fa52a608-dd93-1ad0-ec14-a6fed8399d21"; //uuid color picker "paw" texture ( loaded from the notecard )
+key texPicker2="f74dd856-a4f4-c79f-3e74-533e4cf0a0b1"; //uuid color picker "line" texture ( loaded from the notecard )
+key texSlider; //uuid slider "paw" texture ( loaded from the notecard )
+vector colorSelected=<1.0,1.0,0.0>;
+vector colorUnselected=<1.0,1.0,1.0>;
+
+
+list pickerButtons; //[link_num:button_num ; command]
+list pickerButtonsSelected; //[pickerButton_Index]
+list currentColorPicker; //[link_num ; picker_type]
+vector currentColorPickerColorRGB;
+vector currentColorPickerColorHSV;
+//===============
+integer touching=FALSE;
+float clickTime;
+//===========================================================================================================================
+//===========================================================================================================================
+
+debug(string msg){
+    llOwnerSay(llGetScriptName()+" DEBUG: "+msg);
+}
+
+feedback(string msg){
+    llOwnerSay(msg);
+}
+
+say(string msg){
+    if(!scriptSilent){
+        //debug("say=>"+msg);
+        llSay(CHANNEL, msg); 
+    }
+}
+
+integer stringStartWith(string source, string motif){
+    return llGetSubString(source, 0, llStringLength(motif) - 1) == motif;
+}
+
+string stringReplace(string str, string search, string replace){
+    return llDumpList2String(llParseStringKeepNulls((str = "") + str, [search], []), replace);
+}
+
+string stringReplaceAll(string str, list pattern){
+    integer i=llGetListLength(pattern);
+    while((i-=2)>=0){
+        str=stringReplace(str, llList2String(pattern, i), llList2String(pattern, i+1));
+    }
+    return str;
+}
+
+
+showFreeMemory(){
+    integer freemem = llGetFreeMemory();
+    if(llToLower( "Ü" ) == "Ü"){
+        integer memory = (integer)((float)freemem * 100.0 / 16384.0);
+        feedback(llGetScriptName()+": "+(string)memory + "% memory free ("+(string)freemem+" Byte). LSO" );
+    }else{
+        integer memory = (integer)((float)freemem * 100.0 / 65536.0);
+        feedback(llGetScriptName()+": "+(string)memory + "% memory free ("+(string)freemem+" Byte). Mono" );
+    }
+}
+
+notecardLine(string line){
+    list cmds=llParseString2List(line, [SEPARATOR_1], []);
+    string cmd=llList2String(cmds, 0);
+    list params=llParseString2List(llList2String(cmds, 1), [SEPARATOR_2], []);
+    
+    if(cmd=="channel"){
+        CHANNEL=llList2Integer(params, 0);
+    }else if(cmd=="texturepicker"){
+        texPicker1=llList2Key(params, 0);
+        texPicker2=llList2Key(params, 1);
+    }else if(cmd=="colorselected"){
+        colorSelected=(vector)llList2String(params, 0);
+    }else if(cmd=="colorunselected"){
+        colorUnselected=(vector)llList2String(params, 0);
+    }else if(cmd=="textureon"){
+        textureOn=llList2String(params, 0);
+        
+    }else if(cmd=="textureoff"){
+        textureOff=llList2String(params, 0);
+    }
+}
+
+processCommand(string cmd, string param){
+    
+    list cmds=llParseString2List(llToLower(cmd), [";"], []);
+    list params=llParseString2List(param, [";"], []);
+    cmd=llList2String(cmds, 0);
+    param=llList2String(params, 0);
+    if(cmd=="reset"){
+        llResetScript();
+    }else if(cmd=="memory"){
+        showFreeMemory();
+    }else if(cmd=="mask"){
+        maskCtl(llList2String(cmds, 1), params);
+    }
+}
+
+integer findPrim(string primName){
+    integer i=llGetNumberOfPrims();
+    while(i>0){
+        if(llGetLinkName(i)==primName){
+            return i;
+        }
+        --i;
+    }
+    return -1;
+}
+
+integer getMin(integer A, integer B){
+    if(A<B) return A;
+    return B;
+}
+
+maskCtl(string cmd, list params){
+    if(cmd=="resend"){
+        integer i=llGetListLength(maskButtonsSelected);
+        while((i-=2)>=0){
+            list datas=llParseString2List(llList2String(maskButtonsSelected, i+1), ["."], []);
+            integer link=llList2Integer(datas, 0);
+            integer face=llList2Integer(datas, 1);
+            
+            string data=llList2String(llGetLinkPrimitiveParams(link, [PRIM_DESC]), 0);
+        
+            datas=llParseStringKeepNulls(data, [SEPARATOR_1], []);
+            datas=llDeleteSubList(datas, 0, 1); //removing the panel ID and button Type to only keep command related infos ( it's usless but just a bit cleaner after )
+        
+            say(stringReplaceAll(llList2String(datas, 0)+";"+llList2String(params, 0), ["%msk", "repush", "%v", llList2String(datas, 1+face)]+variables));
+        
+            //say(stringReplaceAll(llList2String(maskButtonsSelected, i+1), variables));
+        }
+    }
+}
+//===========================================================================================================================
+exchangeTexture(integer link, integer face, key uuid){
+    list tempPrimsParams=llGetLinkPrimitiveParams(link, [PRIM_TEXTURE, face]);
+    llSetLinkPrimitiveParamsFast(link, [PRIM_TEXTURE, face, uuid]+llList2List(tempPrimsParams, 1, -1));
+}
+
+
+loadColorPickers(vector color){
+    currentColorPickerColorRGB=color;
+    integer i=llGetListLength(currentColorPicker);
+    while((i-=2)>=0){
+        currentColorPickerColorHSV=RGBtoHSV(color);
+            
+        integer link=llList2Integer(currentColorPicker, i);
+        string type=llList2String(currentColorPicker, i+1);
+        if(type=="2cp"){
+            /*x min=-0.027   x max=-0.923
+              y min=0.015    y max=0.915*/
+            
+            vector texCoord=<currentColorPickerColorHSV.x/360.0, currentColorPickerColorHSV.y, currentColorPickerColorHSV.z>;
+            texCoord.x=scaleAndConstraint(texCoord.x, <-0.027, -0.923, 0.0>, <-0.027, -0.923, 0.0>);
+            texCoord.y=scaleAndConstraint(texCoord.y, < 0.915, 0.015, 0.0>, <0.015,  0.915, 1.0>); 
+            
+            llSetLinkPrimitiveParamsFast(link, [PRIM_TEXTURE, 0, texPicker1, <1.0,1.0,0.0>, texCoord, 0.0]);
+
+            texCoord.z=scaleAndConstraint(texCoord.z, <0.930, 0.0, 0.0>, <0.0, 0.930, 0.0>);            
+            llSetLinkPrimitiveParamsFast(link, [PRIM_TEXTURE, 1, texPicker2, <1.0,1.0,0.0>, <0.0, texCoord.z, 0>, 0.0]); 
+
+            llSetLinkPrimitiveParamsFast(link, [PRIM_COLOR, 2, <currentColorPickerColorHSV.z, currentColorPickerColorHSV.z, currentColorPickerColorHSV.z>, 1.0,
+                                                PRIM_COLOR, 3, HSVtoRGB(<currentColorPickerColorHSV.x, currentColorPickerColorHSV.y, 1.0>), 1.0]);
+            
+        }else if(type=="2cp1"){
+            vector texCoord=currentColorPickerColorRGB;
+            texCoord.x=scaleAndConstraint(texCoord.x, <0.930, 0.0, 0.0>, <0.0, 0.930, 0.0>);     
+            texCoord.y=scaleAndConstraint(texCoord.y, <0.930, 0.0, 0.0>, <0.0, 0.930, 0.0>);     
+            texCoord.z=scaleAndConstraint(texCoord.z, <0.930, 0.0, 0.0>, <0.0, 0.930, 0.0>);               
+            
+            llSetLinkPrimitiveParamsFast(link, [PRIM_TEXTURE, 0, texPicker2, <1.0,1.0,0.0>, <0.0, texCoord.x, 0>, 0.0,
+                                                PRIM_TEXTURE, 1, texPicker2, <1.0,1.0,0.0>, <0.0, texCoord.y, 0>, 0.0,
+                                                PRIM_TEXTURE, 2, texPicker2, <1.0,1.0,0.0>, <0.0, texCoord.z, 0>, 0.0]);
+             
+        }     
+    }   
+    
+    
+}
+
+//===========================================================================================================================
+sendCommandToPickerButtons(){
+    /*list pickerButtons; //[link_num:button_num ; command]
+    list pickerButtonsSelected; //[pickerButton_Index]
+    list currentColorPicker; //[link_num ; picker_type]*/
+    
+    //Send commands for each selected button
+    integer i=0;
+    while(i<llGetListLength(pickerButtonsSelected)){
+        integer buttonIndex=llList2Integer(pickerButtonsSelected, i);
+        
+        string name=llList2String(pickerButtons, buttonIndex);
+        
+        list prim=llParseString2List(name, [":"], []);
+        integer link=llList2Integer(prim, 0);
+        integer buttonNum=llList2Integer(prim, 1);
+        
+        
+        llSetLinkPrimitiveParamsFast(link, [PRIM_COLOR, (buttonNum*2), currentColorPickerColorRGB, 1.0]);        
+        ///==============================================================
+          
+        say(stringReplaceAll(llList2String(pickerButtons, buttonIndex+1), ["%pk", currentColorPickerColorRGB]+variables));
+        i+=1;         
+    }
+}
+
+//===========================================================================================================================
+//===========================================================================================================================
+integer buttonClick(string name, integer link, integer face, string data, list infos){
+    list datas=llParseStringKeepNulls(data, [SEPARATOR_1], []);
+    string buttonType=llList2String(datas, 1);      
+
+        
+    datas=llDeleteSubList(datas, 0, 1); //removing the panel ID and button Type to only keep command related infos ( it's usless but just a bit cleaner after )
+    
+    if(buttonType=="msk"){
+        /*list maskButtons; //[link_num:button_num ; command]
+        list maskButtonsSelected; //[pickerButton_Index]*/
+        
+        
+        integer indexMB=llListFindList(maskButtons, [(string)link+":"+(string)face]);
+        integer indexMBS=llListFindList(maskButtonsSelected, [indexMB]);
+        if(indexMBS==-1){
+            llSetLinkColor(link, colorSelected, face);
+            
+            maskButtonsSelected+=[indexMB, (string)link+"."+(string)face];
+            
+            string command=stringReplaceAll(llList2String(datas, 0), ["%msk", "push", "%v", llList2String(datas, 1+face)]);
+            say(stringReplaceAll(command, variables));
+        }else{
+            llSetLinkColor(link, colorUnselected, face);
+            
+            maskButtonsSelected=llDeleteSubList(maskButtonsSelected, indexMBS, indexMBS+1);            
+            say(stringReplaceAll(llList2String(datas, 0), ["%msk", "pop", "%v", llList2String(datas, 1+face)]+variables));
+        }
+        
+    }else if(buttonType=="mskclr"){
+        maskButtonsSelected=[];
+        integer i=llGetListLength(maskButtons);
+        while(--i>=0){
+            list temp=llParseString2List(llList2String(maskButtons, i), [":"], []);
+            integer linkNum=llList2Integer(temp, 0);
+            integer faceNum=llList2Integer(temp, 1);
+            llSetLinkColor(linkNum, colorUnselected, faceNum);
+
+        }
+        
+        string command=llList2String(datas, 0);
+        string param=llList2String(datas, face+1);
+        if(param!=""){
+            btPushed+=[link, face, textureOff];
+            list primParams=[PRIM_LINK_TARGET, link, PRIM_TEXTURE, face, textureOn]+llList2List(infos, (face*4)+1, (face*4)+3);
+            llSetLinkPrimitiveParamsFast(LINK_SET, primParams);
+            command=stringReplace(command, "%v", param);
+            say(stringReplaceAll(command, variables));  
+            llSetTimerEvent(0.2);
+        }
+        
+    }else if(buttonType=="2pb"){
+        /*list pickerButtons; //[link_num:button_num ; command]
+        list pickerButtonsSelected; //[pickerButton_Index]
+        list currentColorPicker; //[link_num ; picker_type]*/
+        
+        
+        integer buttonNum=face/2;
+        face=(buttonNum)*2;
+        
+        integer indexPB=llListFindList(pickerButtons, [(string)link+":"+(string)buttonNum]);
+        integer indexPBS=llListFindList(pickerButtonsSelected, [indexPB]);
+        if(indexPBS==-1){
+            if(pickerButtonsSelected==[]){ //Empty list so we load first selected color
+                currentColorPickerColorRGB=llList2Vector(llGetLinkPrimitiveParams(link, [PRIM_COLOR, face]), 0);
+                loadColorPickers(currentColorPickerColorRGB);
+                pickerButtonsSelected+=[indexPB];
+            }else{
+                pickerButtonsSelected+=[indexPB];
+                sendCommandToPickerButtons();
+            }
+            llSetLinkColor(link, colorSelected,face+1);
+            //exchangeTexture(link, face+1, textureOn);
+        }else{
+            pickerButtonsSelected=llDeleteSubList(pickerButtonsSelected, indexPBS, indexPBS);
+            llSetLinkColor(link, colorUnselected,face+1);
+            //exchangeTexture(link, face+1, textureOff);
+        }      
+    }else if(buttonType=="2cp5"){
+        currentColorPickerColorRGB=llList2Vector(llGetLinkPrimitiveParams(link, [PRIM_COLOR, face]), 0);
+        loadColorPickers(currentColorPickerColorRGB);
+        sendCommandToPickerButtons();      
+    
+    }else if(buttonType=="reset"){
+        say("reset");
+        llResetScript();
+        
+    }else return FALSE;
+    return TRUE;
+}
+
+integer buttonMultiClick(string name, integer link, integer face, string data, vector coord){
+    list datas=llParseStringKeepNulls(data, [SEPARATOR_1], []);
+    string buttonType=llList2String(datas, 1);  
+        
+    datas=llDeleteSubList(datas, 0, 1); //removing the panel ID and button Type to only keep command related infos ( it's usless but just a bit cleaner after )
+    
+    if(buttonType=="2cp"){//Color picker
+        /*up left:    <0.05, 0.95, 0.00000>
+        up right:   <0.95, 0.95, 0.00000>
+        down left:  <0.05, 0.05, 0.00000>
+        down right: <0.95, 0.05, 0.00000>*/
+        if(face==0){ //HUE/Sat click
+            coord.x=(coord.x*(1+(1-(0.95-0.05))))-0.05;
+            coord.y=(coord.y*(1+(1-(0.95-0.05))))-0.05;
+            
+            if(coord.x>1.0) coord.x=1.0;
+            if(coord.x<0.0) coord.x=0.0;
+            if(coord.y>1.0) coord.y=1.0;
+            if(coord.y<0.0) coord.y=0.0;
+            
+            
+            currentColorPickerColorHSV=<(coord.x*360.0), coord.y, currentColorPickerColorHSV.z>;
+        }else if(face==1){ //Value click
+            coord.y=(coord.y*(1+(1-(0.95-0.05))))-0.05;
+            if(coord.y>1.0) coord.y=1.0;
+            if(coord.y<0.0) coord.y=0.0;
+        
+            currentColorPickerColorHSV=<currentColorPickerColorHSV.x, currentColorPickerColorHSV.y, coord.y>;        
+        }
+        
+        loadColorPickers(HSVtoRGB(currentColorPickerColorHSV));
+        sendCommandToPickerButtons();
+        
+    }else if(buttonType=="2cp1"){
+        coord.y=(coord.y*(1+(1-(0.95-0.05))))-0.05;
+        if(coord.y>1.0) coord.y=1.0;
+        if(coord.y<0.0) coord.y=0.0;
+        
+        if(face==0){ //Red
+            currentColorPickerColorRGB.x=coord.y;   
+        
+        }else if(face==1){ //Green
+            currentColorPickerColorRGB.y=coord.y;
+        
+        }else if(face==2){ //Blue
+            currentColorPickerColorRGB.z=coord.y;
+        
+        }
+        loadColorPickers(currentColorPickerColorRGB);
+        sendCommandToPickerButtons();
+    }else return FALSE;
+    return TRUE;
+}
+
+integer buttonLongClick(string name, integer link, integer face, string data, vector coord){
+    
+    list datas=llParseStringKeepNulls(data, [SEPARATOR_1], []);
+    string buttonType=llList2String(datas, 1);      
+    if(buttonType=="2cp5"){
+        llSetLinkPrimitiveParamsFast(link, [PRIM_COLOR, face, currentColorPickerColorRGB, 1.0]);
+        
+    }else if(buttonType=="gload"){ //We'll actually save
+        say("custom:save;save:"+(string)face);
+
+    }else return FALSE;
+    return TRUE; 
+}
+
+//===========================================================================================================================
+//====================================================================================
+float scaleAndConstraint(float value, vector scale, vector constraint){
+    //value must be between 0 and 1
+    value=(value*(scale.y-scale.x))+scale.x;
+    
+    if(constraint.x<constraint.y){
+        if(value<constraint.x) value=constraint.x;
+        else if(value>constraint.y) value=constraint.y;
+    }else{
+        if(value<constraint.y) value=constraint.y;
+        else if(value>constraint.x) value=constraint.x;
+    }
+    
+    return value;
+}
+
+vector RGBtoHSV( vector rgb ){
+    float R = rgb.x;
+    if (R<0) R=0;       // catch malformed input
+    else if (R>1) R=1;
+        
+    float G = rgb.y;
+    if (G<0) G=0;       // catch malformed input   
+    else if (G>1) G=1;
+        
+    float B = rgb.z;
+    if (B<0) B=0;       // catch malformed input
+    else if (B>1) B=1;
+        
+    float min = llListStatistics(LIST_STAT_MIN, [R, G, B]); //MIN of ( R, G, B );
+    float max = llListStatistics(LIST_STAT_MAX, [R, G, B]); //MAX of ( R, G, B );
+    if( max == 0 ) return <0.0, 0.0, 0.0>;             //H = S = V = 0
+ 
+    float delta = max - min;
+    
+    float H;
+    float S=delta / max;        // S = saturation from 0 to 1
+    float V=max;  // V = brightness Value form 0 to 1
+ 
+ 
+    if ((R==G) && (G==B)) H = 0; // it is a shade of grey, white or black
+    else if( R == max )  H = 0 + ( G - B ) / delta;    // between red & yellow
+    else if( G == max )  H = 2 + ( B - R ) / delta;    // between yellow & cyan
+    else H = 4 + ( R - G ) / delta;    // between cyan & red
+ 
+    H *= 60;                          // H is traditionally a figure between 0 and 360 degrees
+    if( H < 0 ) H += 360;
+ 
+    return <H, S, V>;
+}
+
+vector HSVtoRGB( vector hsv ){ 
+     float H = hsv.x;
+     if (H<0.0) H=0;       // catch malformed H input
+     else if (H>=360.0) H=0;
+     
+     float S = hsv.y;
+     if (S<0.0) S=0;       // catch malformed S input
+     else if (S>1.0) S=1;
+     
+     float V = hsv.z;
+     if (V<0.0) V=0;       // catch malformed V input
+     else if (V>1.0) V=1;
+
+    if( S == 0 ) return <V,V,V>;  // achromatic (grey) simply set R,G, & B = Value 
+ 
+    H /= 60;              // Hue factored into range 0 to 5
+    integer i = llFloor( H );      // integer floor of Hue
+    float f = H - i;            // factorial part of H
+ 
+    float p = V * ( 1 - S );
+    float q = V * ( 1 - S * f );
+    float t = V * ( 1 - S * ( 1 - f ) ); 
+ 
+    if (i==0){          return <V,t,p>;
+    } else if (i==1){   return <q,V,p>;
+    } else if (i==2){   return <p,V,t>;
+    } else if (i==3){   return <p,q,V>;
+    } else if (i==4){   return <t,p,V>;
+    } else {            return <V,p,q>;
+    }
+}
+//===========================================================================================================================
+//===========================================================================================================================
+default
+{
+    state_entry(){
+        owner=llGetOwner();
+        kQuery = llGetNotecardLine(llGetScriptName()+" "+NOTECARD, iLine);
+    }
+
+    changed(integer change){
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_INVENTORY) llResetScript(); 
+    }
+     
+    dataserver(key query_id, string data){
+        if(query_id == kQuery){
+            if(data == EOF){
+                state run;
+            }else{
+                ++iLine;
+                kQuery = llGetNotecardLine(llGetScriptName()+" "+NOTECARD, iLine);
+
+                data=llStringTrim(data, STRING_TRIM);
+                if((data!="") && (llGetSubString(data, 0,0)!="#")){
+                    notecardLine(data);
+                }
+            }
+        }
+    }
+}
+//===========================================================================================================================
+state run
+{
+    state_entry(){
+        scriptSilent=FALSE;
+        llListen(CHANNEL, "", NULL_KEY, "");
+        showFreeMemory();
+    }
+
+    touch_start(integer index){
+        integer num=llDetectedLinkNumber(0);     
+        integer face=llDetectedTouchFace(0);     
+        string name=llGetLinkName(num); 
+        
+        if(num!=1){
+            touching=TRUE;
+            clickTime=llGetTime();
+            
+            /*list params=llGetLinkPrimitiveParams(num, [PRIM_DESC, PRIM_TEXTURE, ALL_SIDES]);
+            string desc=llList2String(params, 0);
+            if(desc!=""){
+                if(!buttonClick(name, num, face, desc, llList2List(params, 1 ,-1))){ //Most Button types
+                    lastTouchCoord=llDetectedTouchST(0);
+                    buttonMultiClick(name, num, face, desc, lastTouchCoord); //Color Picker or slider
+                }
+            }*/
+        }
+    }
+    
+    touch(integer index){
+        vector touchST=llDetectedTouchST(0);
+        
+        integer num=llDetectedLinkNumber(0);     
+        integer face=llDetectedTouchFace(0); 
+        if(face==-1) return;
+        string name=llGetLinkName(num);
+        if(num!=1){ //not root prim
+            string desc=llList2String(llGetLinkPrimitiveParams(num, [PRIM_DESC]), 0);
+            if(desc!=""){
+                float t=llGetTime()-clickTime;
+                if((touching) && (t>=1.0)){
+                    touching=FALSE;
+                    if(buttonLongClick(name, num, face, desc, touchST)){
+                        return;
+                    }   
+                }
+                
+                if(touchST!=lastTouchCoord){
+                    lastTouchCoord=touchST;
+                    buttonMultiClick(name, num, face, desc, lastTouchCoord); 
+                }    
+            }
+        }
+    }
+
+    touch_end(integer index){
+        if(touching){
+            float t=llGetTime()-clickTime;
+            if(t<=1.0){
+                touching=FALSE;
+                
+                integer num=llDetectedLinkNumber(0);
+                integer face=llDetectedTouchFace(0); 
+                if(face==-1) return;
+                string name=llGetLinkName(num);
+                
+                if(num!=1){ //We Ignore root clicks
+                    list params=llGetLinkPrimitiveParams(num, [PRIM_DESC, PRIM_TEXTURE, ALL_SIDES]);
+                    string desc=llList2String(params, 0);
+                    if(desc!=""){
+                        buttonClick(name, num, face, desc, llList2List(params, 1 ,-1)); 
+                    } 
+                }
+            }
+        }
+    }
+    
+    link_message(integer source, integer num, string str, key id){
+        //debug(llGetScriptName()+" received "+str);
+        if(num==1){
+            list l=llParseString2List(str, ["/"], []);
+            string cmd=llList2String(l, 0);
+            if(cmd=="resetbuttons"){
+                currentShownButtons=[]; //List of buttons currently Shown [(str)Name; (int)link_number]
+                pickerButtons=[];
+                pickerButtonsSelected=[];
+            }else if(cmd=="addbutton"){
+                /*list maskButtons; //[link_num:button_num ; command]
+                list maskButtonsSelected; //[pickerButton_Index]
+                list currentColorPicker; //[link_num ; picker_type]*/
+                
+                integer primNum=llList2Integer(l, 2);
+                currentShownButtons+=[llList2String(l, 1), llList2Integer(l, 2)];
+                list temp=llGetLinkPrimitiveParams(llList2Integer(l, 2), [PRIM_NAME, PRIM_DESC]);
+                
+                list parsedDesc=llParseString2List(llList2String(temp, 1), [SEPARATOR_1], []);
+                
+                
+                string type=llList2String(parsedDesc, 1);
+                if(type=="msk"){
+                    string command=llList2String(parsedDesc, 2);
+                    parsedDesc=llDeleteSubList(parsedDesc, 0, 2);
+                
+                    integer i=llGetLinkNumberOfSides(llList2Integer(l, 2))-1;
+                    while(i>=0){
+                        string value=llList2String(parsedDesc, i);
+                        string buttonName=(string)llList2Integer(l, 2)+":"+(string)i;
+                        integer buttonIndex=llListFindList(maskButtons, [buttonName]);
+                        if(buttonIndex==-1){
+                            llSetLinkColor(llList2Integer(l, 2), colorUnselected, i);
+                            maskButtons+=[buttonName];
+                        }
+                        
+                        i-=1;
+                    }
+                }else if((type=="2cp") || (type=="2cp1")){
+                    currentColorPicker+=[llList2Integer(l, 2), type];
+                
+                }else if(type=="2pb"){
+                    string command=llList2String(parsedDesc, 2);
+                    parsedDesc=llDeleteSubList(parsedDesc, 0, 2);
+                    temp=llGetLinkPrimitiveParams(primNum, [PRIM_DESC, PRIM_TEXTURE, ALL_SIDES]);
+                    
+                    list lDesc=llParseString2List(llList2String(temp, 0), ["^"], []);
+                    integer count=llGetListLength(lDesc)-3;
+                
+                    temp=llDeleteSubList(temp, 0, 0);
+                
+                
+                    integer i=0;
+                    while(i<llGetLinkNumberOfSides(primNum)){
+                        integer face=i+1;
+                        llSetLinkColor(primNum, colorUnselected, face);
+                        
+                        string value=llList2String(parsedDesc, (i/2));
+                        string cc=stringReplaceAll(command, ["%v", value]);
+                        pickerButtons+=[(string)llList2Integer(l, 2)+":"+(string)(i/2), cc];
+                    
+                        i+=2;
+                        --count;
+                        if(count==0) return;
+        
+                    }
+                }
+            }
+        }
+    }
+    
+    changed(integer change){
+        if(change&CHANGED_OWNER) llResetScript();
+        if(change&CHANGED_LINK) llResetScript();
+        if(change&CHANGED_INVENTORY) llResetScript();    
+    }
+    
+    timer(){
+        //we remove simple pushed buttons
+        llSetTimerEvent(0.0);
+        
+        list primParams;
+        integer i=llGetListLength(btPushed);
+        while((i-=3)>=0){
+            list l=llGetLinkPrimitiveParams(llList2Integer(btPushed, 0), [PRIM_TEXTURE, llList2Integer(btPushed, 1)]);
+            primParams=[PRIM_LINK_TARGET, llList2Integer(btPushed, 0), PRIM_TEXTURE, llList2Integer(btPushed, 1), llList2Key(btPushed, 2)]+llList2List(l, 1, -1); 
+        }
+        btPushed=[];
+        llSetLinkPrimitiveParamsFast(LINK_SET, primParams);
+    }
+    
+    listen(integer ch, string name, key _id, string message) {
+        if(llGetOwnerKey(_id)==owner){            
+            list temp=llParseString2List(llStringTrim(message, STRING_TRIM), [":"], []);
+            if(llListFindList(["all"], [llList2String(temp, 0)])!=-1){
+                processCommand(llList2String(temp, 1), llList2String(temp, 2));
+            }
+        }
+    }
+}

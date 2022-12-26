@@ -1,0 +1,476 @@
+
+//===========================================================================================================================
+string textureOn;
+string textureOff;
+
+rotation ROT_SHOW=<0.000000, 0.000000, 0.000000, 1.000000>;
+rotation ROT_HIDE=<0.000000, 0.000000, 0.707107, 0.707107>;
+
+integer channel;
+integer HUDOpen=TRUE;
+
+key texPicker1; //uuid color picker "paw" texture ( loaded from the notecard )
+key texPicker2; //uuid color picker "line" texture ( loaded from the notecard )
+key texSlider; //uuid slider "paw" texture ( loaded from the notecard )
+
+list submenu; //[(string)menu; (string)menu.(string)prim.face; (key)button_enabled; (key)button_disabled; (str)name; (int)link_number];
+integer currentShownSubmenu=-1;
+
+list menu; //[(string)prim.face; (str)name; (int)link_number, primList];
+integer currentShownMenu=-1;
+list currentShownButtons; //List of buttons currently Shown [(str)Name; (int)link_number]
+
+
+list variables;//[(str)name, (str)value)]
+list switches; //[(str)name, (str)value)]
+
+list btPushed;//[(int)Link_number, (int)face, (key)texture_disabled]
+
+integer scriptSilent;
+string lastLoadVariable;
+vector colorPickerValue=<0.5,0.5,1.0>;
+vector lastTouchCoord;
+//========== Notecard
+string NOTECARD="Menus settings";//Change if you want to change the name of the settings notecard
+key kQuery;
+integer current_notecard;
+integer iLine;
+
+//==================
+string SEPARATOR_1="^";
+string SEPARATOR_2="~";
+string SEPARATOR_LIST=",";
+
+
+integer buttonHidden;
+//===========================================================================================================================
+//===========================================================================================================================
+debug(string msg){
+    llOwnerSay("DEBUG: "+msg);
+}
+feedback(string msg){
+    llOwnerSay(msg);
+}
+
+say(string msg){
+    if(!scriptSilent){
+        //debug("say=>"+msg);
+        llSay(channel, msg);
+    }
+}
+
+integer stringStartWith(string source, string motif){
+    return llGetSubString(source, 0, llStringLength(motif) - 1) == motif;
+}
+
+string stringReplace(string str, string search, string replace){
+    return llDumpList2String(llParseStringKeepNulls((str = "") + str, [search], []), replace);
+}
+
+string stringReplaceAll(string str, list pattern){
+    integer i=llGetListLength(pattern);
+    while((i-=2)>=0){
+        str=stringReplace(str, llList2String(pattern, i), llList2String(pattern, i+1));
+    }
+    return str;
+}
+
+
+showFreeMemory(){
+    integer freemem = llGetFreeMemory();
+    if(llToLower( "Ü" ) == "Ü"){
+        integer memory = (integer)((float)freemem * 100.0 / 16384.0);
+        feedback(llGetScriptName()+": "+(string)memory + "% memory free ("+(string)freemem+" Byte). LSO" );
+    }else{
+        integer memory = (integer)((float)freemem * 100.0 / 65536.0);
+        feedback(llGetScriptName()+": "+(string)memory + "% memory free ("+(string)freemem+" Byte). Mono" );
+    }
+}
+
+notecardLine(string line){
+    list cmds=llParseString2List(line, [SEPARATOR_1], []);
+    string cmd=llList2String(cmds, 0);
+    list params=llParseString2List(llList2String(cmds, 1), [SEPARATOR_2], []);
+    
+    if(cmd=="channel"){
+        channel=llList2Integer(params, 0);
+
+    }else if(cmd=="textureon"){
+        textureOn=llList2String(params, 0);
+    }else if(cmd=="textureoff"){
+        textureOff=llList2String(params, 0);
+    }else if(cmd=="addmenu"){
+        string prim=llList2String(params, 0);
+        if(llListFindList(menu, [prim])==-1){ //check if that prim.face is not already in use
+            
+            string sPrimList;
+            integer i=llGetNumberOfPrims();
+            while(i>0){
+                list primInfos=llGetLinkPrimitiveParams(i, [PRIM_NAME, PRIM_DESC]);
+                if(stringStartWith(llList2String(primInfos, 1), llList2String(params, 1))){
+                    sPrimList+=(string)i+",";
+                }
+                --i;
+            }
+            //list menu; //[(string)prim.face; (str)name; (int)link_number];
+            menu+=[prim]+llList2String(params, 1)+findPrim(llList2String(llParseString2List(prim, ["."], []), 0))+[sPrimList]; //Just un case there are too many items written we restrict the number
+            
+        }
+    }else if(cmd=="addsub"){
+        string menuName=llList2String(params, 0);
+        string prim=llList2String(params, 1);
+        if(llListFindList(submenu, [menuName+"."+prim])==-1){ //check if that prim.face is not already in use
+            string sPrimList;
+            integer i=llGetNumberOfPrims();
+            while(i>0){
+                list primInfos=llGetLinkPrimitiveParams(i, [PRIM_NAME, PRIM_DESC]);
+                if(stringStartWith(llList2String(primInfos, 1), llList2String(params, 1))){
+                    sPrimList+=(string)i+",";
+                }
+                --i;
+            }
+            //list submenu; //[(string)menu; (string)menu.(string)prim.face; (key)button_enabled; (key)button_disabled; (str)name; (key)texturePanel;
+            submenu+=[menuName, menuName+"."+prim]+llList2List(params, 2, 2)+findPrim(llList2String(llParseString2List(prim, ["."], []), 0))+[sPrimList]; //Just un case there are too many items written we restrict the number
+        }
+    }
+}
+
+integer findPrim(string primName){
+    integer i=llGetNumberOfPrims();
+    while(i>0){
+        if(llGetLinkName(i)==primName){
+            return i;
+        }
+        --i;
+    }
+    return -1;
+}
+//===========================================================================================================================
+switchHUD(){    
+    //Opening or closing the whole HUD
+    HUDOpen=!HUDOpen;
+    if(HUDOpen){ //Opening the HUD 
+        list primParams;
+        integer i;  
+        
+        //We show the menu buttons
+        i=llGetListLength(menu);
+        while((i-=4)>=0){
+            integer link_num=llList2Integer(menu, i+2);
+            if(link_num!=-1){
+                primParams+=[PRIM_LINK_TARGET, link_num, PRIM_ROT_LOCAL, ROT_SHOW];
+            }
+        }                    
+        llSetLinkPrimitiveParamsFast(LINK_SET, primParams);
+        
+        menuClick(llList2String(menu, 0)); //First HUD opening, we open on the first menu registred
+    
+    }else{ //Closing the HUD
+        menuClick(llList2String(menu, 0)); //First HUD opening, we open on the first menu registred
+        llSetLinkPrimitiveParamsFast(LINK_ALL_CHILDREN, [PRIM_ROT_LOCAL, ROT_HIDE]);
+        currentShownMenu=-1;
+    }
+}
+
+menuClick(string prim){
+    list primParams;
+    integer i;
+            
+    integer index=llListFindList(menu, [prim]);
+    if(index!=-1){
+        //Main menu have been clicked
+        if(index==currentShownMenu){
+            if(currentShownMenu!=-1){
+                string currentMenuName=llList2String(menu, index+1);
+                list temp=llParseString2List(prim, ["."], []);
+                integer face=llList2Integer(temp, 1);
+                integer primMenu=findPrim(llList2String(temp, 0));
+                if(primMenu!=-1) temp=llGetLinkPrimitiveParams(primMenu, [PRIM_TEXTURE, face]); 
+                
+                buttonHidden=!buttonHidden;
+                
+                if(buttonHidden){
+                    if(primMenu!=-1) primParams+=[PRIM_LINK_TARGET, primMenu, PRIM_TEXTURE, face, textureOff]+llList2List(temp, 1, 3);
+                    
+                    i=llGetListLength(currentShownButtons);
+                    while((i-=2)>=0){
+                        primParams+=[PRIM_LINK_TARGET, llList2Integer(currentShownButtons, i+1), PRIM_ROT_LOCAL, ROT_HIDE];
+                    }
+                }else{
+                    if(primMenu!=-1) primParams+=[PRIM_LINK_TARGET, primMenu, PRIM_TEXTURE, face, textureOn]+llList2List(temp, 1, 3);
+                    
+                    i=llGetListLength(currentShownButtons);
+                    while((i-=2)>=0){
+                        primParams+=[PRIM_LINK_TARGET, llList2Integer(currentShownButtons, i+1), PRIM_ROT_LOCAL, ROT_SHOW];
+                    }
+                }            
+            
+                llSetLinkPrimitiveParamsFast(LINK_SET, primParams);
+            }
+        }else{
+            
+            string currentMenuName=llList2String(menu, index+1);
+            
+            
+            list temp=llParseString2List(prim, ["."], []);
+            integer primMenu=findPrim(llList2String(temp, 0));
+            if(primMenu!=-1){
+                integer face=llList2Integer(temp, 1);
+                //We change menu's selected item
+                temp=llGetLinkPrimitiveParams(primMenu, [PRIM_TEXTURE, face]); 
+                primParams+=[PRIM_LINK_TARGET, primMenu, PRIM_TEXTURE, face, textureOn]+llList2List(temp, 1, 3);
+            }
+            
+            if(currentShownSubmenu!=-1){
+                temp=llParseString2List(llList2String(submenu, currentShownSubmenu), ["."], []);
+                integer oldPrimMenu=findPrim(llList2String(temp, 0));
+                if(oldPrimMenu!=-1){
+                    integer oldPrimFace=llList2Integer(temp, 1);
+                    temp=llGetLinkPrimitiveParams(oldPrimMenu, [PRIM_TEXTURE, oldPrimFace]); 
+                    primParams+=[PRIM_LINK_TARGET, oldPrimMenu, PRIM_TEXTURE, oldPrimFace, textureOff]+llList2List(temp, 1, 3);
+                }
+                currentShownSubmenu=-1;
+            }
+            
+            temp=llParseString2List(llList2String(menu, currentShownMenu), ["."], []);
+            integer oldPrimMenu=findPrim(llList2String(temp, 0));
+            if(oldPrimMenu!=-1){
+                integer oldPrimFace=llList2Integer(temp, 1);
+                temp=llGetLinkPrimitiveParams(oldPrimMenu, [PRIM_TEXTURE, oldPrimFace]); 
+                primParams+=[PRIM_LINK_TARGET, oldPrimMenu, PRIM_TEXTURE, oldPrimFace, textureOff]+llList2List(temp, 1, 3);
+            }
+            
+            currentShownMenu=index; //Changing the currently shown menu
+            
+            integer subMenuIndex=llListFindList(submenu, [currentMenuName]);
+            if(subMenuIndex!=-1){ //There are submenus so we'll show the first one
+                list l=llParseString2List(llList2String(submenu, subMenuIndex+1), ["."], []);
+                submenuClick(currentMenuName, llDumpList2String(llList2List(l, 1, -1), "."));
+            
+            }else{   //No submenu, we show new stuffs
+                
+                //We Hide Prims
+                i=llGetListLength(currentShownButtons);
+                while((i-=2)>=0){
+                    primParams+=[PRIM_LINK_TARGET, llList2Integer(currentShownButtons, i+1), PRIM_ROT_LOCAL, ROT_HIDE];
+                }
+                
+                
+                currentShownButtons=[];
+                llMessageLinked(LINK_THIS, 1, "resetbuttons", NULL_KEY);
+                
+                list prims=llParseString2List(llList2String(menu, index+3), [","], []);
+                //We search and show new ones
+                i=llGetListLength(prims);
+                while(--i>=0){
+                    integer primNum=llList2Integer(prims, i);
+                    string primName=llGetLinkName(primNum);
+                    primParams+=[PRIM_LINK_TARGET, primNum, PRIM_ROT_LOCAL, ROT_SHOW];
+                    currentShownButtons+=[primName, primNum]; //[Name, link_number]
+                    llMessageLinked(LINK_THIS, 1, "addbutton/"+primName+"/"+(string)primNum, NULL_KEY);
+                }
+                buttonHidden=FALSE;
+            }
+            
+
+            llSetLinkPrimitiveParamsFast(LINK_SET, primParams);
+            //say("all:dump");
+        }
+    }
+}
+
+submenuClick(string currentMenuName, string prim){
+    integer index=llListFindList(submenu, [currentMenuName+"."+prim]);
+    if(index!=-1){
+        //Main menu have been clicked
+        if(index!=currentShownSubmenu){
+            
+            string currentSubmenuName=llList2String(submenu, index+3);
+            
+            list primParams;
+            integer i;
+            
+            list temp=llParseString2List(prim, ["."], []);
+            integer primMenu=findPrim(llList2String(temp, 0));
+            integer face=llList2Integer(temp, 1);
+            
+
+            //We change menu's selected item
+            temp=llGetLinkPrimitiveParams(primMenu, [PRIM_TEXTURE, face]); 
+            primParams+=[PRIM_LINK_TARGET, primMenu, PRIM_TEXTURE, face, textureOn]+llList2List(temp, 1, 3);
+            
+            if(currentShownSubmenu!=-1){
+                temp=llParseString2List(llList2String(submenu, currentShownSubmenu), ["."], []);
+                integer oldPrimMenu=findPrim(llList2String(temp, 0));
+                if(oldPrimMenu!=-1){
+                    integer oldPrimFace=llList2Integer(temp, 1);
+                    temp=llGetLinkPrimitiveParams(oldPrimMenu, [PRIM_TEXTURE, oldPrimFace]); 
+                    //primParams+=[PRIM_LINK_TARGET, oldPrimMenu, PRIM_TEXTURE, oldPrimFace, texMenuDisable, <1.0, 1.0, 0.0>, <0.0, 0.0, 0.0>, 0.0];
+                    primParams+=[PRIM_LINK_TARGET, oldPrimMenu, PRIM_TEXTURE, oldPrimFace, textureOff]+llList2List(temp, 1, 3);
+                }
+            }
+            
+            currentShownSubmenu=index; //Changing the currently shown menu
+            
+            //We Hide Prims
+            i=llGetListLength(currentShownButtons);
+            while((i-=2)>=0){
+                primParams+=[PRIM_LINK_TARGET, llList2Integer(currentShownButtons, i+1), PRIM_ROT_LOCAL, ROT_HIDE];
+            }
+            
+            currentShownButtons=[];
+            llMessageLinked(LINK_THIS, 1, "resetbuttons", NULL_KEY);
+            
+            list prims=llParseString2List(llList2String(submenu, index+3), [","], []);
+            //We search and show new ones
+            i=llGetListLength(prims);
+            while(--i>=0){
+                integer primNum=llList2Integer(prims, i);
+                string primName=llGetLinkName(primNum);
+                primParams+=[PRIM_LINK_TARGET, primNum, PRIM_ROT_LOCAL, ROT_SHOW];
+                currentShownButtons+=[primName, primNum]; //[Name, link_number]
+                llMessageLinked(LINK_THIS, 1, "addbutton/"+primName+"/"+(string)primNum, NULL_KEY);
+            }
+            llSetLinkPrimitiveParamsFast(LINK_SET, primParams);
+        }
+    }
+}
+
+integer buttonClick(string name, integer link, integer face, string data){
+    
+    list datas=llParseStringKeepNulls(data, [SEPARATOR_1], []);
+    string panelID=llList2String(datas, 0);
+    string buttonType=llList2String(datas, 1);      
+
+        
+    datas=llDeleteSubList(datas, 0, 1); //removing the panel ID and button Type to only keep command related infos ( it's usless but just a bit cleaner after )
+    
+    if(buttonType=="mnu"){ //Menu change
+        menuClick(name+"."+(string)face);
+        say(stringReplaceAll(llList2String(datas, 0), variables));
+        
+    }else if(buttonType=="smnu"){ //Submenu change
+        submenuClick(panelID, name+"."+(string)face);
+        say(stringReplaceAll(llList2String(datas, 0), variables));
+        
+        
+    }else if(buttonType=="reset"){
+        say("reset");
+        llResetScript();
+        
+    }else return FALSE;
+    return TRUE;
+}
+
+//====================================================================================
+float scaleAndConstraint(float value, vector scale, vector constraint){
+    //value must be between 0 and 1
+    value=(value*(scale.y-scale.x))+scale.x;
+    
+    if(constraint.x<constraint.y){
+        if(value<constraint.x) value=constraint.x;
+        else if(value>constraint.y) value=constraint.y;
+    }else{
+        if(value<constraint.y) value=constraint.y;
+        else if(value>constraint.x) value=constraint.x;
+    }
+    
+    return value;
+}
+
+
+//===========================================================================================================================
+//===========================================================================================================================
+default
+{
+    state_entry(){
+        kQuery = llGetNotecardLine(NOTECARD, iLine);
+    }
+
+    changed(integer change){
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_INVENTORY) llResetScript(); 
+    }
+     
+    dataserver(key query_id, string data){
+        if(query_id == kQuery){
+            if(data == EOF){
+                state run;
+            }else{
+                ++iLine;
+                kQuery = llGetNotecardLine(NOTECARD, iLine);
+
+                data=llStringTrim(data, STRING_TRIM);
+                if((data!="") && (llGetSubString(data, 0,0)!="#")){
+                    notecardLine(data);
+                }
+            }
+        }
+    }
+}
+//===========================================================================================================================
+state run
+{
+    state_entry(){
+        scriptSilent=FALSE;
+        currentShownMenu=-1;
+        switchHUD();
+        llListen(channel, "", NULL_KEY, "");
+        showFreeMemory();
+    }
+
+    touch_start(integer index){
+        integer num=llDetectedLinkNumber(0);     
+        integer face=llDetectedTouchFace(0); 
+    
+        string name=llGetLinkName(num); 
+        
+        if(num==1){ //Root prim we'll open/close the HUD
+            switchHUD();    
+        /*}else if(num==primMenu){ //Menu
+            menuClick(face, TRUE);*/
+        }else{ //Another prim, probably a button
+            string desc=llList2String(llGetLinkPrimitiveParams(num, [PRIM_DESC]), 0);
+            if(desc!=""){
+                buttonClick(name, num, face, desc);
+            }
+        }
+    }
+    
+    
+    link_message(integer source, integer num, string str, key id){
+        if(num==1){
+            list l=llParseString2List(str, ["/"], []);
+            string cmd=llList2String(l, 0);
+            if(cmd=="variable"){
+                integer index=llListFindList(variables, [llList2String(l, 1)]);
+                if(index==-1){
+                    variables+=[llList2String(l, 1), llList2String(l, 2)];
+                }else{
+                    variables=llListReplaceList(variables, [llList2String(l, 1), llList2String(l, 2)], index, index+1);
+                }
+            }
+        }
+    }
+
+    
+    changed(integer change){
+        if(change&CHANGED_OWNER) llResetScript();
+        if(change&CHANGED_LINK) llResetScript();
+        if(change&CHANGED_INVENTORY) llResetScript();    
+    }
+    
+    timer(){
+        //we remove simple pushed buttons
+        llSetTimerEvent(0.0);
+        
+        list primParams;
+        integer i=llGetListLength(btPushed);
+        while((i-=3)>=0){
+            primParams=[PRIM_LINK_TARGET, llList2Integer(btPushed, 0), PRIM_TEXTURE, llList2Integer(btPushed, 1), llList2Key(btPushed, 2), <1.0, 1.0, 0.0>, <0.0, 0.0, 0.0>, 0.0];
+        }
+        btPushed=[];
+        llSetLinkPrimitiveParamsFast(LINK_SET, primParams);
+    }
+    
+}

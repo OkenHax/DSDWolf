@@ -1,0 +1,338 @@
+//Commons
+integer CHANNEL;
+integer giveDebug;
+integer giveFeedback;
+integer listenHandle;
+list IDs;
+key owner;
+//========== Notecard
+string NOTECARD="settings";
+key kQuery;
+integer current_notecard;
+integer iLine;
+
+//===================
+integer CHANNEL_JAWTALKING;
+
+integer STATE_CHECK_LAG;
+float DILATION_LAG_LIMIT;
+//===================
+
+integer isSleeping;
+ 
+float lastDilation;
+integer lastInfos;
+
+integer needAnimCheck;
+integer needInfoCheck;
+//===================
+integer animPerm;
+ 
+integer checkTalk;
+integer isTalking;
+integer bumpTalk;
+
+integer checkLag;
+float lagMin;
+float lagMax;
+
+list allInfos=[
+"type", AGENT_TYPING,
+"away", AGENT_AWAY,
+"busy", AGENT_BUSY
+];
+integer infoChecks;
+//===================
+integer synchronizeTick;
+float synchronizeTime;
+//===================
+
+//I want "const" keyword, that should be shared between scripts
+list allAnimations=[
+"crouch",      "Crouching",     "crouch",
+"hover",       "Hovering",      "hover",
+"hoverdown",   "Hovering Down", "hoverdown",
+"hoverup",     "Hovering Up",   "hoverup",
+"jump",        "Jumping",       "jump",
+"prejump",     "PreJumping",    "prejump",
+"run",         "Running",       "run",
+"sit",         "Sitting",       "sit",
+"groundsit",   "Sitting on Ground","groundsit",
+"strid",       "Striding",      "strid",
+"fly",         "Flying",        "fly",
+"slowfly",     "FlyingSlow",    "slowfly",
+"fall",        "Falling Down",  "fall",
+"stand",       "Standing",      "stand",
+"land",        "Landing",       "land",
+"softland",    "Soft Landing",  "softland",
+"crouchwalk",  "CrouchWalking", "crouchwalk",
+"turnleft",    "Turning Left",  "turnleft",
+"turnright",   "Turning Right", "turnright",
+"walk",        "Walking",       "walk"
+];
+list animationChecks;
+list animationCommands;
+
+string lastAnimation;
+string lastAnimationCommand;
+//===============================================================================================
+//===============================================================================================
+string strReplace(string str, string search, string replace) {
+    return llDumpList2String(llParseStringKeepNulls((str = "") + str, [search], []), replace);
+}
+//===============================================================================================
+//===========================================================================================================================
+//Commons
+
+showFreeMemory(){
+    integer freemem = llGetFreeMemory();
+    if(llToLower( "Ü" ) == "Ü"){
+        integer memory = (integer)((float)freemem * 100.0 / 16384.0);
+        debug(llGetScriptName()+" "+(string)memory + "% memory free ("+(string)freemem+" Byte). LSO" );
+    }else{
+        integer memory = (integer)((float)freemem * 100.0 / 65536.0);
+        debug(llGetScriptName()+" "+(string)memory + "% memory free ("+(string)freemem+" Byte). Mono" );
+    }
+}
+
+integer getChannel(string _chan){
+    if(_chan=="dynamic"){
+        return -8388608-(integer)("0x"+llList2String(llParseString2List(llGetOwner(), ["-"], []), 2));
+    }else return (integer)_chan;
+}
+
+debug(string s){
+    if(giveDebug) llOwnerSay(s);
+}
+feedback(string s){
+    if(giveFeedback!=0) llOwnerSay(s);
+}
+
+
+processCommand(string cmd, string param){
+    list cmds=llParseString2List(llToLower(cmd), [";"], []);
+    list params=llParseString2List(param, [";"], []);
+    cmd=llList2String(cmds, 0);
+    param=llList2String(params, 0);
+    if(cmd=="channel"){
+        CHANNEL=getChannel(param);
+        if(listenHandle!=-1) llListenRemove(listenHandle);
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, ""); 
+    }else if(cmd=="reset"){
+        llResetScript();
+    }else if(cmd=="id"){
+        IDs=llParseString2List(param, [","], []);
+    }else if(cmd=="feedback"){
+        if(param=="on") giveFeedback++; else giveFeedback--;
+    }else if(cmd=="debug"){
+        giveDebug=(param=="on");
+        
+    }else if(cmd=="channel_jawtalk"){
+        CHANNEL_JAWTALKING=(integer)param;
+    }else if(cmd=="state"){
+        cmd=llList2String(cmds, 1);
+        if(cmd=="lag"){
+            lagMin=llList2Float(params, 0);
+            lagMax=llList2Float(params, 1);
+        }else if(cmd=="check"){
+            integer index;
+            if(llList2String(params, 1)=="on"){//Just skip if not true
+                index=llListFindList(allAnimations, [param]);
+                if(index!=-1){ //animations
+                    animationChecks+=llList2String(allAnimations, index+1);
+                    animationCommands+=llList2String(allAnimations, index+2);
+                    needAnimCheck=TRUE;            
+                }else{ 
+                    index=llListFindList(allInfos, [param]);
+                    if(index!=-1){//infos
+                        infoChecks=infoChecks|llList2Integer(allInfos, index+1);
+                        needInfoCheck=TRUE;
+                    }else{ //special states
+                        if(param=="talk"){
+                            checkTalk=(llList2String(params, 1)=="on");
+                        }
+                    }            
+                }
+            }
+        }
+    }
+}
+
+//===========================================================================================================================
+say(string s){
+    //llOwnerSay(s);
+    llSay(CHANNEL, s);
+}
+checkInfos(){    
+    integer infos=llGetAgentInfo(owner)&infoChecks;
+    integer change=infos^lastInfos;
+    if(change!=0){
+        if(change&AGENT_TYPING){
+            if(infos&AGENT_TYPING) say("all:state;switch:type;on");
+                else say("all:state;switch:type;off");
+        }else if(change&AGENT_AWAY){
+            if(infos&AGENT_AWAY) say("all:state;switch:away;on");
+                else say("all:state;switch:away;off");
+        }else if(change&AGENT_BUSY){
+            if(infos&AGENT_BUSY) say("all:state;switch:busy;on");
+                else say("all:state;switch:busy;off");
+        }
+
+        lastInfos=infos;
+    }
+}
+
+checkAnim(){
+    string anim=llGetAnimation(owner);
+    if(anim!=lastAnimation){
+        string delayOff=lastAnimationCommand;
+        integer index=llListFindList(animationChecks, [anim]);        
+        lastAnimation=anim;        
+        if(index!=-1){            
+            lastAnimationCommand=llList2String(animationCommands, index);
+            say("all:state;switch:"+lastAnimationCommand+";on;"+(string)llGetTimeOfDay( ));
+        }else{
+            lastAnimationCommand="";
+        }
+        if(delayOff!=""){ //For smoother transition, it avoids other scripts to revert back to default
+            say("all:state;switch:"+delayOff+";off;"+(string)llGetTimeOfDay( ));
+        }
+        
+        //Synchronize
+        synchronizeTime=llGetTime();
+        synchronizeTick=0;
+    }
+}
+
+checkLags(){
+    float dilation=llGetRegionTimeDilation();
+    if((dilation>lagMin) && (lastDilation>lagMin)){
+        //back to normal
+        llSetTimerEvent(2.0);
+        isSleeping=TRUE;
+        say("all:state;switch:lag;on");
+        feedback("Lag control: Enabling all features.");
+    }
+    lastDilation=(lastDilation+dilation)/2;
+}
+//===============================================================================================
+//===============================================================================================
+default{
+    state_entry() {
+        owner=llGetOwner();
+        kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+    }
+    
+    changed(integer change){   
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_INVENTORY) llResetScript();    
+        if(change & CHANGED_LINK)llResetScript();    
+    }
+    
+    dataserver(key query_id, string data) {
+        if(query_id == kQuery){
+            if(data == EOF){
+                ++current_notecard;
+                string note=llGetScriptName()+"_"+NOTECARD+(string)current_notecard;
+                if(llGetInventoryType(note)!=INVENTORY_NONE){
+                    kQuery = llGetNotecardLine(note, iLine=0);
+                }else{
+                    state run;
+                }
+            }else{
+                ++iLine;
+                if(current_notecard!=0){
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD+(string)current_notecard, iLine);
+                }else{
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+                }
+
+                data=llStringTrim(data, STRING_TRIM);
+                if(llGetSubString(data, 0,0)!="#"){
+                    list l=llParseString2List(data, [":"], []);
+                    processCommand(llList2String(l, 0), llList2String(l, 1));
+                }
+            }
+        }
+    }
+}
+//===============================================================================================
+state run{
+    state_entry(){
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, ""); 
+        if(checkTalk){ 
+            llListen(CHANNEL_JAWTALKING, "", owner, "");
+        } 
+        showFreeMemory();      
+        if(needAnimCheck){
+            animPerm=FALSE;
+            llRequestPermissions(owner, PERMISSION_TRIGGER_ANIMATION);
+        }
+        
+        llSetTimerEvent(0.3);
+    }
+
+    run_time_permissions(integer perm) {
+        if (perm & PERMISSION_TRIGGER_ANIMATION) {
+            animPerm=TRUE;
+        }
+    }
+
+    listen(integer chan, string name, key id, string message){
+        if(chan==CHANNEL){
+            if(llGetOwnerKey(id)==owner){
+                list temp=llParseString2List(llStringTrim(message, STRING_TRIM), [":"], []);
+                if(llListFindList(IDs, [llList2String(temp, 0)])!=-1){
+                    processCommand(llList2String(temp, 1), llList2String(temp, 2));
+                }
+            }
+        }else{
+            list l=llParseString2List(message, [" "], []);
+            if(llList2String(l, 0)=="JT"){
+                bumpTalk=4;
+                if(!isTalking){
+                    isTalking=TRUE;
+                    say("all:state;switch:talk;on");
+                }
+            }
+        }
+    }
+    
+    changed(integer change){
+        if(change&CHANGED_OWNER) llResetScript();
+        if((change&CHANGED_TELEPORT) || (change&CHANGED_REGION)){
+            lastDilation=1.0;
+            lastInfos=lastInfos|AGENT_AWAY; // force to resend the "not away"
+            llSleep(5.0); // let's try like that
+            
+            if(lastAnimationCommand!="") say("all:state;switch:"+lastAnimationCommand+";on;"+(string)llGetTimeOfDay());
+        }
+    }
+
+    timer(){
+        if(isSleeping){
+            float dilation=llGetRegionTimeDilation();
+            if((dilation>lagMax) && (lastDilation>lagMax)){
+                //back to normal
+                llSetTimerEvent(0.3);
+                isSleeping=FALSE;
+                say("all:state;switch:lag;off");
+                feedback("Lag control: Enabling all features.");
+            }
+            lastDilation=(lastDilation+dilation)/2;
+        }else{
+            ++synchronizeTick;
+            //if((synchronizeTick%20)==0) 
+            
+            if(checkLag) checkLags();
+            if(checkTalk){
+                if( ((--bumpTalk)==0) && isTalking){
+                    isTalking=FALSE;
+                    say("all:state;switch:talk;off");
+                }
+            }
+            if(needInfoCheck) checkInfos();
+            if(needAnimCheck&&animPerm) checkAnim();
+        }
+    }
+}

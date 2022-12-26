@@ -1,0 +1,582 @@
+//========== Commons
+integer CHANNEL;
+integer giveDebug;
+integer giveFeedback;
+integer listenHandle;
+list IDs;
+key owner;
+
+integer scriptRunning=FALSE;
+
+//========== Notecard
+string NOTECARD="settings";
+key kQuery; 
+integer current_notecard;
+integer iLine;
+
+//========== Constraints
+float MAX_FPS;
+//========== Tail
+list prims;
+list frameInfos;//[PRIM_LINK_TARGET, link_num, PRIM_POS_LOCAL, pos, PRIM_ROT_LOCAL, rot];
+integer frameNum;
+integer frameNumTotal;
+
+integer MAX_PRIMS; 
+integer MAX_FRAMES;
+integer effectiveMaxFrames;
+//vector relativePos=<0.28, 0.0, 0.0>;
+float width;
+float length;
+float baseScale;
+
+//====
+list presetsBackup;
+list presets=["current", 0,0,0,0,0,0];//name;style;speed;strength;lift;screw;balance
+integer currentPreset=0;
+
+integer flickerEnabled=TRUE;
+integer flickering;
+
+integer wagStyle=0;
+
+float speed=1.0;
+
+integer wagEnabled=TRUE;
+float wagStrength=10.0;
+float lift=0.0;            
+float screw=0.0;
+float balance=0.0;
+
+integer speedAuto=FALSE;
+integer strengthAuto=TRUE;
+integer liftAuto=TRUE;
+integer screwAuto=TRUE;
+integer balanceAuto=TRUE;
+
+
+//<milieu, ecart_manuel, ecart_auto> en manual la valeur est entre x-y et x+y  en auto elle est comprise entre x-z et x+z
+vector BASE_ROTATION;
+
+vector STRENGTH_CONSTRAINT=<3.5, 5.5, 1.5>;
+vector LIFT_CONSTRAINT=<-1.0, 22.0, 17.0>;
+vector SCREW_CONSTRAINT=<0.0, 3.4, 2.0>;
+vector BALANCE_CONSTRAINT=<0.0, 5.0, 2.0>;
+//========== benchmark
+float lastTime;
+string strValue; 
+//================================================================================
+//================================================================================
+showFreeMemory(){ 
+    integer freemem = llGetFreeMemory(); 
+    integer memory = (integer)((float)freemem * 100.0 / 65536.0);
+    llOwnerSay( (string)memory + "% memory free ("+(string)freemem+" Byte). Mono" );
+}
+
+debug(string s){ 
+    if(giveDebug) llOwnerSay(s);
+}
+feedback(string s){
+    if(giveFeedback!=0) llOwnerSay(s);
+}
+
+processCommand(string cmd, string param){ 
+    list cmds=llParseString2List(llToLower(cmd), [";"], []);
+    list params=llParseString2List(param, [";"], []);
+    cmd=llList2String(cmds, 0);
+    param=llList2String(params, 0);
+    if(cmd=="channel"){
+        CHANNEL=(integer)param;
+        if(listenHandle!=-1) llListenRemove(listenHandle);
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, "");
+    }else if(cmd=="reset"){
+        llResetScript();
+    }else if(cmd=="dump"){
+        llSay(CHANNEL+1, "hud:load:"+dumpSettings());
+    }else if(cmd=="id"){
+        IDs=llParseString2List(param, [","], []);
+    }else if(cmd=="feedback"){
+        if(param=="on") giveFeedback++; else giveFeedback--;
+    }else if(cmd=="debug"){
+        giveDebug=(param=="on");
+    }else if(cmd=="prim"){
+        primCtl(llList2String(cmds, 1), params);
+    }else if(cmd=="constraint"){
+        constraintCtl(llList2String(cmds, 1), params);
+    }else if(cmd=="preset"){       
+        presetCtl(llList2String(cmds, 1), params);
+    }else if(cmd=="shape"){       
+        shapeCtl(llList2String(cmds, 1), params);
+    }
+}
+//===========================================================================================================================
+//Dump
+string dumpSettings(){
+    //name;style;speed;strength;lift;screw;balance
+    return 
+    "t3="+llList2String(["off", "on"], wagEnabled)+";"+               //Enabled
+    "t5="+(string)llList2Integer(presets, currentPreset+1)+";"+      //wag style
+    "t6="+(string)llList2Float(presets, currentPreset+2)+";"+        //speed
+    "t7="+(string)llList2Float(presets, currentPreset+3)+";"+        //strength
+    "t8="+(string)llList2Float(presets, currentPreset+4)+";"+        //lift
+    "t9="+(string)llList2Float(presets, currentPreset+5)+";"+        //screw
+    "t10="+(string)llList2Float(presets, currentPreset+6);           //balance
+    /*llDumpList2String(IDs, ",")+";"+
+    (string)(wagEnabled)+";"+//wag
+    (string)(currentPreset/6)+";"+//current preset
+    (string)llList2Integer(presets, currentPreset+1)+";"+ 
+    (string)llList2Float(presets, currentPreset+2)+";"+   //speed
+    (string)llList2Float(presets, currentPreset+3)+";"+   //strength
+    (string)llList2Float(presets, currentPreset+4)+";"+   //lift
+    (string)llList2Float(presets, currentPreset+5)+";"+   //screw
+    (string)llList2Float(presets, currentPreset+6);       //balance*/
+}
+//================================================================================
+constraintCtl(string cmd, list params){
+    if(cmd=="fps"){
+        MAX_FPS=llList2Float(params, 0);
+    }else if(cmd=="frames"){
+        MAX_FRAMES=llList2Integer(params, 0);
+        effectiveMaxFrames=(integer)scaleFloat(1.0-speed, 8, MAX_FRAMES, TRUE);
+    }else if(cmd=="rotation"){
+        BASE_ROTATION=(vector)llList2String(params, 0);
+    }
+}
+//================================================================================
+float scaleFloat(float value, float min, float max, integer round){
+    value=(value*(max-min))+min;
+    if(round) value=(integer)value;
+    return value;
+}
+
+float getConstrainedValue(float value, vector constraint){
+    if(value==-1){
+        return llFrand(constraint.z*2)+(constraint.x-constraint.z);
+    }else{
+        return scaleFloat(value, constraint.x-constraint.y, constraint.x+constraint.y, FALSE);
+    }
+}
+
+shapeCtl(string cmd, list params){
+    
+    float value=llList2Float(params, 0);
+    if(cmd=="length"){
+        length=value;
+    }else if(cmd=="width"){
+        width=value;
+    }else if(cmd=="scale"){
+        baseScale=value;
+    }
+    
+    applySize();
+    if(!wagEnabled){ 
+        llSetTimerEvent(0.0);
+        directDrawFrame(0);
+    }else{
+        llSetTimerEvent(1.0/MAX_FPS);
+    }
+    
+}
+
+flexCtl(string cmd, list params){
+    if(cmd=="style"){         presets=llListReplaceList(presets, [llList2Integer(params, 1)], currentPreset+1, currentPreset+1); 
+    }else if(cmd=="speed"){   presets=llListReplaceList(presets, [llList2Float(params, 1)], currentPreset+2, currentPreset+2);   
+    }else if(cmd=="strength"){ presets=llListReplaceList(presets, [llList2Float(params, 1)], currentPreset+3, currentPreset+3);   
+    }else if(cmd=="lift"){    presets=llListReplaceList(presets, [llList2Float(params, 1)], currentPreset+4, currentPreset+4);   
+    }else if(cmd=="twist"){   presets=llListReplaceList(presets, [llList2Float(params, 1)], currentPreset+5, currentPreset+5);   
+    }else if(cmd=="balance"){ presets=llListReplaceList(presets, [llList2Float(params, 1)], currentPreset+6, currentPreset+6);   
+    }else if(cmd=="flicker"){ flickerEnabled=(llList2String(params, 1)=="on");
+    }else if(cmd=="enable"){
+        wagEnabled=(llList2String(params, 1)=="on");       
+    }
+}
+
+applyPreset(integer index){
+
+    wagStyle   =llList2Integer(presets, index+1);
+    
+    speedAuto=(llList2Float(presets, index+2)==-1.0);
+    speed=llList2Float(presets, index+2);
+    effectiveMaxFrames=(integer)scaleFloat(1.0-speed, 8, MAX_FRAMES, TRUE);
+    
+    
+    strengthAuto=(llList2Float(presets, index+3)==-1.0);
+    wagStrength=getConstrainedValue(llList2Float(presets, index+3), STRENGTH_CONSTRAINT); 
+    
+    liftAuto=(llList2Float(presets, index+4)==-1.0);
+    //lift=scaleFloat(llList2Float(presets, index+4), LIFT_CONSTRAINT.x-LIFT_CONSTRAINT.y, LIFT_CONSTRAINT.x+LIFT_CONSTRAINT.y, FALSE);
+    lift=getConstrainedValue(llList2Float(presets, index+4), LIFT_CONSTRAINT);
+    
+    screwAuto=(llList2Float(presets, index+5)==-1.0);
+    //screw=scaleFloat(llList2Float(presets, index+5), SCREW_CONSTRAINT.x-SCREW_CONSTRAINT.y, SCREW_CONSTRAINT.x+SCREW_CONSTRAINT.y, FALSE);
+    screw=getConstrainedValue(llList2Float(presets, index+5), SCREW_CONSTRAINT);
+    
+    balanceAuto=(llList2Float(presets, index+6)==-1.0);
+    //balance=scaleFloat(llList2Float(presets, index+6), BALANCE_CONSTRAINT.x-BALANCE_CONSTRAINT.y, BALANCE_CONSTRAINT.x+BALANCE_CONSTRAINT.y, FALSE);
+    balance=getConstrainedValue(llList2Float(presets, index+6), BALANCE_CONSTRAINT);
+               
+
+    if(!wagEnabled){ 
+        llSetTimerEvent(0.0);
+        directDrawFrame(0);
+    }else{
+        llSetTimerEvent(1.0/MAX_FPS);
+    }    
+}
+
+presetCtl(string cmd, list params){  
+    if(cmd=="add"){
+        ////name;style;speed;strength;lift;twist;balance
+        string name   =llList2String(params, 0);
+        if(llListFindList(presets, [name])==-1){
+            integer style =llList2Integer(params, 1);
+            float speed   =llList2Float(params, 2);
+            float strength=llList2Float(params, 3);
+            float lift    =llList2Float(params, 4);
+            float screw   =llList2Float(params, 5);
+            float balance =llList2Float(params, 6);
+            
+            presetsBackup+=[name, style, speed, strength, lift, screw, balance];
+            presets      +=[name, style, speed, strength, lift, screw, balance];
+        }else llOwnerSay("Error: preset already registred.");
+        
+    }else if(cmd=="set"){
+        integer indexCurrent=llListFindList(presets, ["current"]);
+        integer index=llListFindList(presets, [llList2String(params, 0)]);
+        if(index!=-1){
+            presets=llListReplaceList(presets, llList2List(presets, index+1, index+6), indexCurrent+1, indexCurrent+6);
+            
+            currentPreset=index;
+            applyPreset(indexCurrent);
+            
+            llSay(CHANNEL+1, "hud:load:"+dumpSettings());
+        }else llOwnerSay("preset not found "+llList2String(params, 0));
+        
+    }else if(cmd=="reset"){
+        presets=llListReplaceList(presetsBackup, llList2List(presets, currentPreset, currentPreset+6), currentPreset, currentPreset+6);
+        presetCtl("set", [llList2String(presets, currentPreset)]);
+        
+    }else if(cmd=="save"){
+        integer indexCurrent=llListFindList(presets, ["current"]);
+        presets=llListReplaceList(presets, llList2List(presets, indexCurrent+1, indexCurrent+6), currentPreset+1, currentPreset+6);
+        
+        
+    }else if(cmd=="flex"){
+        integer indexCurrent=llListFindList(presets, ["current"]);
+        
+        cmd=llList2String(params, 0); 
+        if(cmd=="style"){         presets=llListReplaceList(presets, [llList2Integer(params, 1)], indexCurrent+1, indexCurrent+1); 
+        }else if(cmd=="speed"){   presets=llListReplaceList(presets, [llList2Float(params, 1)], indexCurrent+2, indexCurrent+2);   
+        }else if(cmd=="strength"){ presets=llListReplaceList(presets, [llList2Float(params, 1)], indexCurrent+3, indexCurrent+3);   
+        }else if(cmd=="lift"){    presets=llListReplaceList(presets, [llList2Float(params, 1)], indexCurrent+4, indexCurrent+4);   
+        }else if(cmd=="twist"){   presets=llListReplaceList(presets, [llList2Float(params, 1)], indexCurrent+5, indexCurrent+5);   
+        }else if(cmd=="balance"){ presets=llListReplaceList(presets, [llList2Float(params, 1)], indexCurrent+6, indexCurrent+6);   
+        }else if(cmd=="flicker"){ flickerEnabled=(llList2String(params, 1)=="on");
+        }else if(cmd=="enable"){
+            wagEnabled=(llList2String(params, 1)=="on");       
+        }
+        
+        applyPreset(indexCurrent);
+    }
+}
+
+
+primCtl(string cmd, list params){
+    if(cmd=="add"){
+        string name=llList2String(params, 0);
+        
+        integer linkNum=searchPrim(name);
+        if(linkNum!=-1){
+            vector sizeMin=(vector)llList2String(params, 1);
+            vector sizeMax=(vector)llList2String(params, 2);
+            prims+=[linkNum, sizeMin, sizeMax, llList2Float(params, 3), ZERO_VECTOR]; //[link, min, max, current]
+            ++MAX_PRIMS;
+        }
+    }
+}
+
+integer searchPrim(string primName){    
+    integer i=llGetNumberOfPrims()+1;
+    while(--i){
+        if(llGetLinkName(i)==primName){
+            return i;
+        }
+    }
+    return -1;
+}
+
+//================================================================================
+
+float Exp(float x){
+    float E = 2.718281828;
+    return llPow(E, x);
+}
+
+float Sinh(float x){
+    return 0.5 * (Exp(x) - Exp(-x));
+}
+
+applySize(){
+    if(scriptRunning){
+        vector tmp=llGetScale(); 
+        float currentScale=tmp.x;
+        
+        debug("width="+(string)width+" length="+(string)length);
+        
+        integer i;      
+        for(i=0; i<MAX_PRIMS; i++){
+            vector min=llList2Vector(prims, (i*5)+1)/baseScale*currentScale;
+            vector max=llList2Vector(prims, (i*5)+2)/baseScale*currentScale;
+            
+            vector current=<min.x+((max.x-min.x)*width), min.y+((max.y-min.y)*length), min.z+((max.z-min.z)*width)>; 
+            prims=llListReplaceList(prims, [current], (i*5)+4, (i*5)+4);
+            llSetLinkPrimitiveParamsFast(llList2Integer(prims, (i*5)), [PRIM_SIZE, current]);
+        }
+    }
+}
+
+
+directDrawFrame(integer frame){
+    vector pos;//=ZERO_VECTOR;
+    rotation rot;//=ZERO_ROTATION;
+    vector primScale=llList2Vector(prims, 4);
+    float primOffset=llList2Float(prims, 3);
+    
+    float x=frame/(float)(effectiveMaxFrames-1.0);
+    ++frameNumTotal;
+    float x2=(float)(frameNumTotal%(effectiveMaxFrames*4))/(float)(effectiveMaxFrames*4);
+    //llOwnerSay((string)x2);
+            
+    list temp;
+    integer begin=(frame*MAX_PRIMS)*3; 
+    integer end  =begin+(MAX_PRIMS*3)-1;
+    integer i;
+    integer j=0;
+    
+    
+    integer isUp=(lift<LIFT_CONSTRAINT.x);
+    
+    for(i=begin; i<=end; i+=3){
+        float y=(j/(float)(MAX_PRIMS-1)); 
+        
+        //angle.x: torn
+        //angle.y: up/down
+        //angle.z: right/left
+        vector angle;
+        if(wagEnabled){
+            //angle=<(1.0-lift)*llCos(y*PI), screw*llCos(x*TWO_PI) , 0.0>;
+            angle=<0.0, screw*llCos(x*TWO_PI) , 0.0>;
+            
+            if(isUp){
+                angle.x=((1.0-lift)*llCos(y*PI));// - (5.5*(0.5+llSin(x2*TWO_PI)/2.0));
+            }else{
+                angle.x=((1.0-lift)*llCos(y*PI));// + (5.5*(0.5+llSin(x2*TWO_PI)/2.0));
+            }
+            
+            if(wagStyle==0){
+                angle.z=wagStrength*llCos((x*TWO_PI)-(y*PI)) +balance;
+            }else if(wagStyle==1){
+                angle.z=wagStrength*llCos((x*TWO_PI)-(y*TWO_PI)) +balance;
+            }else if(wagStyle==2){
+                angle.z=llCos(x*TWO_PI)*wagStrength*llCos(y*TWO_PI) +balance;
+            }else if(wagStyle==3){
+                angle.z=wagStrength*llCos(x*TWO_PI) +balance;
+            }else if(wagStyle==4){
+                angle.z=wagStrength*llCos(x*TWO_PI)*(Sinh(y*PI)/8.0) +balance;
+            }
+        }else{
+            angle=<(1.0-lift)*llCos(y*PI), 0.0, balance>;
+        }
+        
+        rotation relativeRot=llEuler2Rot(angle*DEG_TO_RAD);
+        rot =(relativeRot*rot); //Adding the rotation        
+        
+        temp+=[PRIM_LINK_TARGET, llList2Integer(prims, (j++)*5), PRIM_POS_LOCAL, pos, PRIM_ROT_LOCAL,llEuler2Rot(BASE_ROTATION*DEG_TO_RAD)*rot];
+        
+        pos+=(<0.0, (primScale.y/2)*primOffset, 0.0>*rot);        
+    }
+    
+    llSetLinkPrimitiveParamsFast(LINK_ROOT, temp);
+}
+
+flirck(integer frame, integer up){
+    vector pos;//=ZERO_VECTOR;
+    rotation rot;//=ZERO_ROTATION;
+    vector primScale=llList2Vector(prims, 4);
+    float primOffset=llList2Float(prims, 3);
+    
+    float x=frame/(float)(8-1.0);
+            
+    list temp;
+    integer begin=(frame*MAX_PRIMS)*3; 
+    integer end  =begin+(MAX_PRIMS*3)-1;
+    integer i;
+    integer j=0;
+        float ease_out=((llCos((x*TWO_PI))/2.0)+0.5);
+        float ease_in=((llSin((x*TWO_PI))/2.0)+0.5);
+        /*float ease_out=((llCos((x*TWO_PI))/2.0)+0.5);
+        float ease_in=1.0-ease_out;*/
+    //llOwnerSay("x="+(string)x+" out="+(string)ease_out+" in="+(string)ease_in);
+            
+    integer isUp=(lift<LIFT_CONSTRAINT.x);
+
+    for(i=begin; i<=end; i+=3){
+        float y=(j/(float)(MAX_PRIMS-1)); 
+        
+        //angle.x: torn
+        //angle.y: up/down
+        //angle.z: right/left
+        
+        vector angle=<(1.0-lift)*llCos(y*PI), 0.0, balance>;
+        angle.x=angle.x*ease_out;
+        
+        float flick;
+        if(isUp){
+            flick=(15*llCos((x*TWO_PI)-(y*PI)))-(12*llCos(y*PI));
+            /*//flick=(15*llSin((x*TWO_PI)-(y*PI)));
+            flick=(15*llSin((x*TWO_PI)-(y*PI)));//+(3*llCos(y*PI));*/
+        }else{
+            flick=(15*llCos((x*TWO_PI)-(y*PI)))-(12*llCos(y*PI));
+            /*flick=(15*llSin((x*TWO_PI)-(y*PI)));//+(3*llCos(y*PI));*/
+            flick*=-1;
+        }
+        
+        angle.x+=flick*ease_in;
+        //angle.x=flick;
+        
+        rotation relativeRot=llEuler2Rot(angle*DEG_TO_RAD);
+        rot =(relativeRot*rot); //Adding the rotation        
+        
+        temp+=[PRIM_LINK_TARGET, llList2Integer(prims, (j++)*5), PRIM_POS_LOCAL, pos, PRIM_ROT_LOCAL, llEuler2Rot(BASE_ROTATION*DEG_TO_RAD)*rot];
+        
+        pos+=(<0.0, (primScale.y/2)*primOffset, 0.0>*rot);        
+    }
+    
+    llSetLinkPrimitiveParamsFast(LINK_ROOT, temp);
+    
+}
+
+//================================================================================
+//================================================================================
+default 
+{
+    state_entry(){
+        kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+        //init
+        prims=[];
+        owner=llGetOwner();        
+    }
+
+    changed(integer change){ 
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_INVENTORY) llResetScript(); 
+    }
+
+    dataserver(key query_id, string data){
+        if(query_id == kQuery){
+            if(data == EOF){
+                ++current_notecard;
+                string note=llGetScriptName()+"_"+NOTECARD+" "+(string)current_notecard;
+                if(llGetInventoryType(note)!=INVENTORY_NONE){
+                    kQuery = llGetNotecardLine(note, iLine=0);
+                }else{
+                    state run;
+                }
+            }else{
+                ++iLine;
+                if(current_notecard!=0){
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD+" "+(string)current_notecard, iLine);
+                }else{
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+                }
+
+                data=llStringTrim(data, STRING_TRIM);
+                if(llGetSubString(data, 0,0)!="#"){
+                    list l=llParseString2List(data, [":"], []);
+                    processCommand(llList2String(l, 0), llList2String(l, 1));
+                }
+            }
+        }
+    }
+}
+
+//================================================================================
+state run{
+    state_entry(){
+        scriptRunning=TRUE;
+        applySize();
+                
+        showFreeMemory();
+        lastTime=llGetTime();
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, "");
+        
+    }
+    
+    listen(integer chan, string name, key _id, string message){ 
+        //llOwnerSay(message);
+        if(chan==CHANNEL){
+            if(llGetOwnerKey(_id)==owner){
+                list temp=llParseString2List(llStringTrim(message, STRING_TRIM), [":"], []);
+                if(llListFindList(IDs, [llList2String(temp, 0)])!=-1){
+                    processCommand(llList2String(temp, 1), llList2String(temp, 2));
+                }
+            }
+        }
+    }
+      
+    changed(integer change){ 
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_LINK) llResetScript(); 
+    }
+    
+    timer(){
+        if(flickering){
+            flirck(frameNum, TRUE);
+            frameNum=(frameNum+1)%(8-1);
+            if(frameNum==0){
+                flickering=(llFrand(1.0)<0.4);
+                if(!flickering){
+                    llSetTimerEvent(1.0/MAX_FPS);
+                }  
+            }
+        }else{
+            directDrawFrame(frameNum);     
+            frameNum=(frameNum+1)%(effectiveMaxFrames-1); 
+            if(frameNum==0){
+                if(llFrand(1.0)<0.1)
+                   if(speedAuto) constraintCtl("frames", [8+llFrand(10.0)]);
+                
+                if(llFrand(1.0)<0.1) 
+                    if(strengthAuto) wagStrength=getConstrainedValue(-1, STRENGTH_CONSTRAINT); 
+                                     
+                if(llFrand(1.0)<0.1){
+                    if(liftAuto){ 
+                        float x=llFrand(1.0);
+                        if(x>0.5){
+                            lift=llFrand(7*2)+(10-7);
+                        }else{
+                            lift=llFrand(7*2)+(-10-7);
+                        }
+                    }
+                }
+                
+                if(llFrand(1.0)<0.1)
+                    if(screwAuto) screw=getConstrainedValue(-1, SCREW_CONSTRAINT);
+                
+                if(llFrand(1.0)<0.1)
+                    if(balanceAuto) balance=getConstrainedValue(-1, BALANCE_CONSTRAINT);
+                
+                if(flickerEnabled){
+                    flickering=(llFrand(1.0)<0.2); 
+                    if(flickering){//supa fast flirck! 
+                        llSetTimerEvent(0.5/MAX_FPS);
+                        //llSetTimerEvent(0.3);
+                    }
+                }
+            } 
+        }
+        
+        
+      
+    }
+}
